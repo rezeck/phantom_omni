@@ -17,6 +17,7 @@
 #include <HDU/hduError.h>
 #include <HDU/hduVector.h>
 #include <HDU/hduMatrix.h>
+#include <HDU/hduQuaternion.h>
 
 #include "omni_msgs/OmniButtonEvent.h"
 #include "omni_msgs/OmniFeedback.h"
@@ -36,7 +37,7 @@ struct OmniState {
   hduVector3Dd out_vel3;
   hduVector3Dd pos_hist1; //3x1 history of position used for 2nd order backward difference estimate of velocity
   hduVector3Dd pos_hist2;
-  hduVector3Dd rot;
+  hduQuaternion rot;
   hduVector3Dd joints;
   hduVector3Dd force;   //3 element double vector force[0], force[1], force[2]
   float thetas[7];
@@ -55,16 +56,17 @@ public:
 
   ros::Publisher button_publisher;
   ros::Subscriber haptic_sub;
-  std::string omni_name;
   std::string sensable_frame_name;
   std::string link_names[7];
+  std::string omni_name, ref_frame, units;
 
   OmniState *state;
   tf::TransformBroadcaster br;
 
   void init(OmniState *s) {
-    ros::param::param(std::string("~omni_name"), omni_name,
-        std::string("phantom"));
+    ros::param::param(std::string("~omni_name"), omni_name, std::string("phantom"));
+    ros::param::param(std::string("~reference_frame"), ref_frame, std::string("/map"));
+    ros::param::param(std::string("~units"), units, std::string("mm"));
 
     //Publish on NAME/pose
     std::ostringstream stream00;
@@ -115,7 +117,7 @@ public:
     state->out_vel3 = zeros;  //3x1 history of velocity
     state->pos_hist1 = zeros; //3x1 history of position
     state->pos_hist2 = zeros; //3x1 history of position
-    state->lock = true;
+    state->lock = false;
     state->lock_pos = zeros;
 
   }
@@ -158,11 +160,25 @@ public:
 
     //Sample 'end effector' pose
     geometry_msgs::PoseStamped pose_stamped;
-    pose_stamped.header.frame_id = link_names[6].c_str();
+    //pose_stamped.pose.position.x = 0.0;   //was 0.03 to end of phantom
+    //pose_stamped.pose.orientation.w = 1.;
+    pose_stamped.pose.position.x = -state->position[0]/1000.0;
+    pose_stamped.pose.position.y = state->position[2]/1000.0;
+    pose_stamped.pose.position.z = state->position[1]/1000.0;
+    pose_stamped.pose.orientation.x = state->rot.v()[0];
+    pose_stamped.pose.orientation.y = state->rot.v()[1];
+    pose_stamped.pose.orientation.z = state->rot.v()[2];
+    pose_stamped.pose.orientation.w = state->rot.s();
+    pose_stamped.header.frame_id = "pose";//link_names[6].c_str();
     pose_stamped.header.stamp = ros::Time::now();
-    pose_stamped.pose.position.x = 0.0;   //was 0.03 to end of phantom
-    pose_stamped.pose.orientation.w = 1.;
     pose_publisher.publish(pose_stamped);
+
+    tf::Transform transform;
+    transform.setOrigin( tf::Vector3(pose_stamped.pose.position.x, pose_stamped.pose.position.y, pose_stamped.pose.position.z) );
+    tf::Quaternion q(pose_stamped.pose.orientation.x, pose_stamped.pose.orientation.y, pose_stamped.pose.orientation.z, pose_stamped.pose.orientation.w);
+    transform.setRotation(q);
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "world", "pose"));
+
 
     if ((state->buttons[0] != state->buttons_prev[0])
         or (state->buttons[1] != state->buttons_prev[1])) {
@@ -248,7 +264,7 @@ void HHD_Auto_Calibration() {
   hdGetIntegerv(HD_CALIBRATION_STYLE, &supportedCalibrationStyles);
   if (supportedCalibrationStyles & HD_CALIBRATION_ENCODER_RESET) {
     calibrationStyle = HD_CALIBRATION_ENCODER_RESET;
-    ROS_INFO("HD_CALIBRATION_ENCODER_RESE..");
+    ROS_INFO("HD_CALIBRATION_ENCODER_RESET..");
   }
   if (supportedCalibrationStyles & HD_CALIBRATION_INKWELL) {
     calibrationStyle = HD_CALIBRATION_INKWELL;
